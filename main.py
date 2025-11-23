@@ -1,6 +1,7 @@
 import cv2 as cv
 
-
+import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 webcam_ID = 0
 
 # Show cat
@@ -12,19 +13,10 @@ webcam_ID = 0
 cap = cv.VideoCapture(0)
 cap.set(cv.CAP_PROP_FRAME_WIDTH, 600)
 cap.set(cv.CAP_PROP_FRAME_HEIGHT, 600)
-
-success, frame = cap.read()
-if success:
-    cv.imshow("Webcam", frame)
-    cv.waitKey(0)
-    cap.release()
-
-# Save frame
-def take_photo():
-    print("Taking Photo")
-    cap = cv.VideoCapture(webcam_ID)
+while True:
     success, frame = cap.read()
-    cv.imwrite('photos/test.jpg', frame)
-    cap.release()
-
-take_photo()
+    if not success:
+        break
+    cv.imshow("Webcam", frame)
+    if cv.waitKey(1) & 0xFF == ord('q'):
+        break
