@@ -9,7 +9,7 @@ from threading import Thread
 from queue import Queue
 
 # --- CONFIGURATION ---
-FILE_NAME = 'math_gestures.csv'
+FILE_NAME = 'gestures.csv'
 TARGET_SAMPLES = 25 # Real captures (results in 40 rows due to mirroring)
 
 # ==========================================
