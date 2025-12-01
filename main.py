@@ -4,11 +4,11 @@ import numpy as np
 import time
 import os
 import csv
+import sys
 import pandas as pd
 from threading import Thread
 from sklearn.neighbors import KNeighborsClassifier
 
-# --- FAST CAPTURE CLASS ---
 class ThreadedCamera:
     def __init__(self, source=0):
         self.capture = cv.VideoCapture(source)
@@ -46,7 +46,25 @@ class ThreadedCamera:
 
     def stop(self):
         self.stopped = True
+class ValueStabilizer:
+    def __init__(self, required_frames=45):
+        self.required_frames = required_frames
+        self.current_value = None
+        self.streak = 0
+    
+    def update(self, new_value):
+        if new_value == self.current_value and new_value is not None:
+            self.streak += 1
+        else:
+            self.current_value = new_value
+            self.streak = 0
+        if self.streak >= self.required_frames:
+            return self.current_value
+        return None
 
+    def reset(self):
+        self.current_value = None
+        self.streak = 0
 def get_features(landmarks):
     points = []
     for lm in landmarks.landmark:
@@ -56,10 +74,8 @@ def get_features(landmarks):
     max_val = np.max(np.abs(points))
     if max_val == 0: max_val = 1
     return (points / max_val).flatten().reshape(1, -1)
-
 def calc_dist(p1, p2):
     return np.linalg.norm(np.array([p1.x, p1.y]) - np.array([p2.x, p2.y]))
-
 def count_fingers(landmarks):
     count = 0
 
@@ -399,131 +415,40 @@ def count_fingers(landmarks):
                     break
 
 
-def run_gesture_trainer(hands, mp_draw, stream, file_name):
-    print("--- GESTURE TRAINER STARTED ---")
-    
-    # Initialize file with header
-    with open(file_name, 'w', newline='') as f:
-        csv.writer(f).writerow(['label'] + [f'v{i}' for i in range(42)])
-
-    samples = {'+': 0, '-': 0, '*': 0, '/': 0, '_': 0, '=': 0}
-    
-    recording_active = False
-    target_char = None
-    frames_to_record = 0
-    countdown_start_time = 0
-    countdown_duration = 3.0
-    
-    # Buffer to hold data in RAM before writing (Prevents I/O lag/hangs)
-    data_buffer = []
-
-    while True:
-        status, frame = stream.read()
-        if not status: break
-        
-        display_frame = frame.copy()
-        frame_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-        results = hands.process(frame_rgb)
-        
-        # --- UI DRAWING ---
-        cv.rectangle(display_frame, (0,0), (640, 80), (30, 30, 30), -1)
-        cv.putText(display_frame, "TRAINING MODE", (20, 40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        
-        y = 100
-        for op, count in samples.items():
-            col = (0, 255, 0) if count >= 40 else (0, 0, 255)
-            # Friendly names
-            name = "SPACE (Start)" if op == '_' else op
-            name = "EQUALS (End)" if op == '=' else name
-            
-            cv.putText(display_frame, f"'{name}': {count}", (20, y), cv.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
-            y += 35
-
-        current_features = None
-        if results.multi_hand_landmarks:
-            landmarks = results.multi_hand_landmarks[0]
-            mp_draw.draw_landmarks(display_frame, landmarks, mp.solutions.hands.HAND_CONNECTIONS)
-            current_features = get_features(landmarks).flatten()
-
-        # --- BURST LOGIC ---
-        if recording_active:
-            elapsed = time.time() - countdown_start_time
-            
-            # Phase 1: Countdown
-            if elapsed < countdown_duration:
-                sec = int(countdown_duration - elapsed) + 1
-                cv.putText(display_frame, f"READY: {sec}", (200, 240), cv.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 4)
-            
-            # Phase 2: Capture to RAM Buffer
-            elif frames_to_record > 0:
-                cv.putText(display_frame, "CAPTURING!", (200, 240), cv.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
-                
-                if current_features is not None:
-                    # Save to RAM buffer instead of Disk
-                    data_buffer.append([target_char] + list(current_features))
-                    
-                    # Mirror (Data Augmentation for opposite hand)
-                    feats_mirror = current_features.copy()
-                    feats_mirror[0::2] = feats_mirror[0::2] * -1
-                    data_buffer.append([target_char] + list(feats_mirror))
-                    
-                    samples[target_char] += 2
-                    frames_to_record -= 1
-                    cv.rectangle(display_frame, (0,0), (640, 480), (255, 255, 255), 10)
-            
-            # Phase 3: Write to Disk (Once)
-            else:
-                print(f"Writing {len(data_buffer)} samples to disk...")
-                with open(file_name, 'a', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerows(data_buffer)
-                
-                # Cleanup
-                data_buffer = [] 
-                recording_active = False
-                target_char = None
-        
-        else:
-            cv.putText(display_frame, "Keys: +, -, *, /, SPACE, =", (20, y+20), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
-            # Only show "Q to Finish" if we have enough data
-            if sum(samples.values()) >= 20:
-                 cv.putText(display_frame, "Press 'Q' to Finish", (20, y+50), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        cv.imshow("Math App", display_frame)
-        
-        # --- CRITICAL FIX: Update Window ---
-        # Moving waitKey outside ensures the window updates every frame
-        key = cv.waitKey(1) & 0xFF
-        
-        if key == 27: # ESC force quit
-            return False
-
-        if not recording_active:
-            # Map Spacebar(32) to '_'
-            char = '_' if key == 32 else chr(key)
-            
-            if char in samples:
-                recording_active = True
-                target_char = char
-                frames_to_record = 20
-                countdown_start_time = time.time()
-                data_buffer = [] # Reset buffer
-            elif key == ord('q'):
-                # Simple check: do we have at least SOME data?
-                if sum(samples.values()) < 20:
-                    print("⚠️ Record more samples!")
-                else:
-                    return True # Signal Success
-
-
-# --- 5. INITIALIZATION AND CONDITIONAL LOAD ---
 FILE_NAME = 'math_gestures.csv'
-# Use the ThreadedCamera instead of standard cv.VideoCapture
-stream = ThreadedCamera(0).start()
-time.sleep(1.0) # Allow camera to warm up
+
+print("--- MATH GESTURE CALCULATOR ---")
+
+# CRITICAL CHECK: Does training data exist?
+if not os.path.exists(FILE_NAME):
+    print("\n❌ CRITICAL ERROR: Training data not found!")
+    print(f"   Missing file: {FILE_NAME}")
+    print("   Please run 'trainer.py' first to record your gestures.")
+    sys.exit(1)
+
+# Load Model
+try:
+    print("Loading Gesture Model...")
+    df = pd.read_csv(FILE_NAME)
+    if len(df) < 5: 
+        raise ValueError("Data file is empty or too small.")
+        
+    X = df.iloc[:, 1:].values
+    y = df.iloc[:, 0].values
+    
+    knn = KNeighborsClassifier(n_neighbors=3)
+    knn.fit(X, y)
+    print("✅ Model Loaded Successfully!")
+
+except Exception as e:
+    print(f"\n❌ ERROR LOADING MODEL: {e}")
+    print("   Your training data might be corrupt. Please re-run 'trainer.py'.")
+    sys.exit(1)
+
+
 
 mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+mp_draw = mp.solutions.drawing_utils
 
 # init hand model parameters
 hands = mp_hands.Hands(
@@ -534,82 +459,175 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.9
 )
 
-needs_training = False
-if not os.path.exists(FILE_NAME):
-    needs_training = True
+stream = ThreadedCamera(0).start()
+time.sleep(1.0)
 
-# 2. If yes, run trainer
-if needs_training:
-    print("Training data missing. Launching trainer...")
-    run_gesture_trainer(hands, mp_drawing, stream, FILE_NAME)
+MODE = "IDLE"
+num1, op, num2, result = None, None, None, None
+stabilizer = ValueStabilizer(required_frames=45)
 
-# 3. Load Model (It is guaranteed to exist now unless user quit early)
+
 try:
-    df = pd.read_csv(FILE_NAME)
-    if len(df) < 5: raise ValueError("Not enough samples!")
-    
-    knn = KNeighborsClassifier(n_neighbors=3)
-    knn.fit(df.iloc[:, 1:].values, df.iloc[:, 0].values)
-    print("Model Loaded Successfully.")
-    HAS_MODEL = True
-except Exception as e:
-    print(f"CRITICAL ERROR: Could not load model. {e}")
-    HAS_MODEL = False
+    while True:
+        status, frame = stream.read()
+        if not status: break
+        
+        frame = cv.flip(frame, 1)
+        display_frame = frame.copy()
+        frame_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+        results = hands.process(frame_rgb)
+        
+        cv.rectangle(display_frame, (0,0), (640, 80), (30, 30, 30), -1)
+        
+        # --- PER-FRAME VARIABLES ---
+        total_fingers = 0
+        detected_gesture = None
+        highest_confidence = 0.0
 
+        # --- PROCESS ALL HANDS FIRST ---
+        if results.multi_hand_landmarks:
+            for landmarks in results.multi_hand_landmarks:
+                mp_draw.draw_landmarks(display_frame, landmarks, mp.solutions.hands.HAND_CONNECTIONS)
+                
+                # 1. Sum Fingers
+                total_fingers += count_fingers(landmarks)
+                
+                # 2. Check for Operator Gestures (Take best match)
+                feats = get_features(landmarks)
+                pred = knn.predict(feats)[0]
+                conf = np.max(knn.predict_proba(feats))
+                
+                # Keep the gesture with highest confidence in this frame
+                if conf > 0.7 and conf > highest_confidence:
+                    detected_gesture = pred
+                    highest_confidence = conf
 
+        # --- STATE MACHINE (RUNS ONCE PER FRAME USING TOTALS) ---
+        
+        # Global Reset Check
+        if detected_gesture == '_': # SPACE gesture
+            res = stabilizer.update('_')
+            if res:
+                if MODE != "GET_NUM_1":
+                    print("Reset Triggered via Gesture")
+                    MODE = "GET_NUM_1"
+                    num1, op, num2, result = None, None, None, None
+                stabilizer.reset()
 
+        # Logic Flow
+        if MODE == "IDLE":
+            cv.putText(display_frame, "Do 'SPACE' Gesture to Start", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
+        elif MODE == "GET_NUM_1":
+            cv.putText(display_frame, f"1st Number: {total_fingers}", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+            # Stabilize on the TOTAL finger count
+            res = stabilizer.update(total_fingers)
+            if res is not None:
+                num1 = res
+                MODE = "GET_OP"
+                stabilizer.reset() 
 
+        elif MODE == "GET_OP":
+            valid_ops = ['+', '-', '*', '/']
+            curr_op = detected_gesture if detected_gesture in valid_ops else None
+            
+            txt = f"{num1} [Op: {curr_op or '?'}] {int(highest_confidence*100)}%"
+            cv.putText(display_frame, txt, (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
+            
+            if curr_op:
+                res = stabilizer.update(curr_op)
+                if res:
+                    op = res
+                    MODE = "GET_NUM_2"
+                    stabilizer.reset()
 
+        elif MODE == "GET_NUM_2":
+            cv.putText(display_frame, f"{num1} {op} [Num2: {total_fingers}]", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+            res = stabilizer.update(total_fingers)
+            if res is not None:
+                num2 = res
+                MODE = "WAIT_EQUALS" 
+                stabilizer.reset()
 
+        elif MODE == "WAIT_EQUALS":
+            cv.putText(display_frame, f"{num1} {op} {num2} ... [Show =]", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            
+            if detected_gesture == '=':
+                res = stabilizer.update('=')
+                if res:
+                    MODE = "SHOW_RESULT"
+                    try:
+                        if op == "+": result = num1 + num2
+                        elif op == "-": result = num1 - num2
+                        elif op == "*": result = num1 * num2
+                        elif op == "/": 
+                            result = round(num1 / num2, 2) if num2 != 0 else "Err"
+                    except: result = "Err"
+        
+        elif MODE == "SHOW_RESULT":
+            cv.putText(display_frame, f"{num1} {op} {num2} = {result}", (50, 240), cv.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+            cv.putText(display_frame, "Do 'SPACE' to Reset", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-STATE = "IDLE"
+        # Progress Bar Logic
+        if MODE in ["GET_NUM_1", "GET_OP", "GET_NUM_2", "WAIT_EQUALS"] and stabilizer.current_value is not None:
+            prog = int((stabilizer.streak / stabilizer.required_frames) * 200)
+            cv.rectangle(display_frame, (20, 90), (20 + prog, 110), (0, 255, 0), -1)
+
+        cv.imshow("Math Calculator", display_frame)
+        if cv.waitKey(1) & 0xFF == 27: break
+
+finally:
+    stream.stop()
+    cv.destroyAllWindows()
+    print("Program exited cleanly.")
 
 # frame processing loop
-while False:
-    # get frame from camera
-    success, frame = stream.read()
-    if not success:
-        break
+# while False:
+#     # get frame from camera
+#     success, frame = stream.read()
+#     if not success:
+#         break
     
-    # performance fix, convert color for processing to RGB
-    frame.flags.writeable = False
-    frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+#     # performance fix, convert color for processing to RGB
+#     frame.flags.writeable = False
+#     frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
 
-    # process frame through hands model
-    results = hands.process(frame)
+#     # process frame through hands model
+#     results = hands.process(frame)
 
-    # performance fix, convert color for processing to BGR for viewing
-    frame.flags.writeable = True
-    frame = cv.cvtColor(frame, cv.COLOR_RGB2BGR)
+#     # performance fix, convert color for processing to BGR for viewing
+#     frame.flags.writeable = True
+#     frame = cv.cvtColor(frame, cv.COLOR_RGB2BGR)
     
-    finger_count = 0
+#     finger_count = 0
     
-    if results.multi_hand_landmarks: 
-        for landmarks in results.multi_hand_landmarks:
+#     if results.multi_hand_landmarks: 
+#         for landmarks in results.multi_hand_landmarks:
             
             
             
-            finger_count += count_fingers(landmarks)
+#             finger_count += count_fingers(landmarks)
 
 
 
 
-            mp_drawing.draw_landmarks(
-                frame, 
-                landmarks, 
-                mp_hands.HAND_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
-            )
+#             mp_drawing.draw_landmarks(
+#                 frame, 
+#                 landmarks, 
+#                 mp_hands.HAND_CONNECTIONS,
+#                 mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+#                 mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
+#             )
 
-    cv.putText(frame, f'Count: {finger_count}', (50, 100), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    cv.imshow("Webcam", frame)
+#     cv.putText(frame, f'Count: {finger_count}', (50, 100), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+#     cv.imshow("Webcam", frame)
 
-    # break on Q
-    if cv.waitKey(1) & 0xFF == ord('q'):
-        stream.stop()
-        break
+#     # break on Q
+#     if cv.waitKey(1) & 0xFF == ord('q'):
+#         stream.stop()
+#         break
 
-# clean up
-cv.destroyAllWindows()
+# # clean up
+# cv.destroyAllWindows()
