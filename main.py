@@ -12,6 +12,19 @@ import pandas as pd
 from threading import Thread
 from sklearn.neighbors import KNeighborsClassifier
 
+
+FILE_NAME = 'gestures.csv'
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
+
+# Colors (B, G, R)
+COL_BG = (50, 50, 50)      # Dark Gray
+COL_TXT = (255, 255, 255)  # White
+COL_ACCENT = (255, 255, 0) # Cyan/Teal
+COL_WARN = (0, 0, 255)     # Red
+COL_GOOD = (0, 255, 0)     # Green
+
+
 class ThreadedCamera:
     def __init__(self, source=0):
         self.capture = cv.VideoCapture(source)
@@ -124,7 +137,26 @@ def count_fingers(landmarks):
 
     return count
 
+def draw_header_bg(img):
+    """Draws the big gray header box."""
+    cv.rectangle(img, (0, 0), (WINDOW_WIDTH, 150), COL_BG, -1)
+    cv.line(img, (0, 150), (WINDOW_WIDTH, 150), (100, 100, 100), 2)
 
+def draw_centered_text(img, text, y, font_scale=1.0, color=COL_TXT, thickness=2):
+    """Centers text horizontally at height y."""
+    font = cv.FONT_HERSHEY_SIMPLEX
+    text_size = cv.getTextSize(text, font, font_scale, thickness)[0]
+    text_x = (WINDOW_WIDTH - text_size[0]) // 2
+    cv.putText(img, text, (text_x, y), font, font_scale, color, thickness, cv.LINE_AA)
+
+def draw_progress_bar(img, progress):
+    """Draws a progress bar at the bottom of the header."""
+    if progress > 0:
+        bar_width = int(WINDOW_WIDTH * progress)
+        # Background slot
+        cv.rectangle(img, (0, 140), (WINDOW_WIDTH, 150), (30, 30, 30), -1)
+        # Fill
+        cv.rectangle(img, (0, 140), (bar_width, 150), COL_ACCENT, -1)
 
 FILE_NAME = 'gestures.csv'
 
@@ -132,7 +164,7 @@ print("--- MATH GESTURE CALCULATOR ---")
 
 # CRITICAL CHECK: Does training data exist?
 if not os.path.exists(FILE_NAME):
-    print("\n❌ CRITICAL ERROR: Training data not found!")
+    print("\nError: Training data not found!")
     print(f"   Missing file: {FILE_NAME}")
     print("   Please run 'trainer.py' first to record your gestures.")
     sys.exit(1)
@@ -149,10 +181,10 @@ try:
     
     knn = KNeighborsClassifier(n_neighbors=3)
     knn.fit(X, y)
-    print("✅ Model Loaded Successfully!")
+    print("Model Loaded Successfully!")
 
 except Exception as e:
-    print(f"\n❌ ERROR LOADING MODEL: {e}")
+    print(f"\nERROR LOADING MODEL: {e}")
     print("   Your training data might be corrupt. Please re-run 'trainer.py'.")
     sys.exit(1)
 
@@ -177,7 +209,7 @@ MODE = "GET_NUM_1"
 
 last_valid_finger_count = 0
 num1, op, num2, result = None, None, None, None
-stabilizer = ValueStabilizer(required_frames=45)
+stabilizer = ValueStabilizer(required_frames=20)
 
 
 try:
@@ -191,7 +223,7 @@ try:
         
         results = hands.process(frame_rgb)
         
-        cv.rectangle(display_frame, (0,0), (640, 80), (30, 30, 30), -1)
+        draw_header_bg(display_frame)
         
         # --- PER-FRAME VARIABLES ---
         detected_gesture = None
@@ -233,38 +265,48 @@ try:
         # --- STATE MACHINE (RUNS ONCE PER FRAME USING TOTALS) ---
         
         # Global Reset Check
-        if detected_gesture == '_': # SPACE gesture
+        if detected_gesture == '_': # Reset gesture
             res = stabilizer.update('_')
             if res:
                 if MODE != "GET_NUM_1":
                     print("Reset Triggered via Gesture")
                     MODE = "GET_NUM_1"
                     num1, op, num2, result = None, None, None, None
+
+                print("stab Reset")
                 stabilizer.reset()
 
 
+
         if MODE == "GET_NUM_1":
-            cv.putText(display_frame, f"1st Number: {fingers}", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-            
+            draw_centered_text(display_frame, f"{fingers}", 100, 2.0, COL_ACCENT)
+            draw_centered_text(display_frame, "Show First Number", 135, 0.6, COL_TXT)
+
             if hands_present:
+                print("hand present")
                 res = stabilizer.update(fingers)
+                print("stab")
                 print(stabilizer.current_value)
 
 
                 if res is not None:
                     num1 = res
                     MODE = "GET_OP"
+                    print("stab Reset")
                     stabilizer.reset()
             else:
                 # If hands leave frame, break the streak
+                
+                print("stab Reset")
                 stabilizer.reset()
 
         elif MODE == "GET_OP":
             valid_ops = ['+', '-', '*', '/']
             curr_op = detected_gesture if detected_gesture in valid_ops else None
             
-            txt = f"{num1} [Op: {curr_op or '?'}] {int(highest_confidence*100)}%"
-            cv.putText(display_frame, txt, (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
+            display_op = curr_op if curr_op else "?"
+            draw_centered_text(display_frame, f"{num1}  {display_op}", 100, 2.0, COL_TXT)
+            draw_centered_text(display_frame, "Show Operator (+ - * /)", 135, 0.6, COL_TXT)
             
             if curr_op:
                 res = stabilizer.update(curr_op)
@@ -274,7 +316,8 @@ try:
                     stabilizer.reset()
 
         elif MODE == "GET_NUM_2":
-            cv.putText(display_frame, f"{num1} {op} [Num2: {fingers}]", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            draw_centered_text(display_frame, f"{num1} {op} {fingers}", 100, 2.0, COL_ACCENT)
+            draw_centered_text(display_frame, "Show Second Number", 135, 0.6, COL_TXT)
             
             res = stabilizer.update(fingers)
             if res is not None:
@@ -290,25 +333,18 @@ try:
                 stabilizer.reset()
         
         elif MODE == "SHOW_RESULT":
-            cv.putText(display_frame, f"{num1} {op} {num2} = {result}", (50, 240), cv.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
-            cv.putText(display_frame, "Do 'SPACE' to Reset", (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            draw_centered_text(display_frame, f"{num1} {op} {num2} = {result}", 100, 2.0, COL_GOOD)
+            draw_centered_text(display_frame, "Use Start/Reset gesture to Reset", 135, 0.6, COL_TXT)
 
         # Progress Bar Logic
-        if MODE in ["GET_NUM_1", "GET_OP", "GET_NUM_2", "WAIT_EQUALS"]:
-            # Use the new helper method
-            progress = stabilizer.get_progress()
-            # print("progress:" + progress)
-            width = int(progress * 200)
-            # Draw background bar (grey)
-            cv.rectangle(display_frame, (20, 90), (220, 110), (50, 50, 50), -1)
-            # Draw fill bar (green)
-            cv.rectangle(display_frame, (20, 90), (20 + width, 110), (0, 255, 0), -1)
-            # Draw border (white)
-            cv.rectangle(display_frame, (20, 90), (220, 110), (255, 255, 255), 2)
+        # Draw Progress Bar in Header
+        if MODE in ["GET_NUM_1", "GET_OP", "GET_NUM_2"]:
+            prog = stabilizer.get_progress()
+            draw_progress_bar(display_frame, prog)
 
+        # Show Window
         cv.imshow("Math Calculator", display_frame)
         if cv.waitKey(1) & 0xFF == 27: break
-
 finally:
     stream.stop()
     cv.destroyAllWindows()

@@ -1,18 +1,18 @@
-# AI Gesture Calculator 🖐️➕
+# KGRM - kNN Gesture Recognition Model
 
 An interactive, touchless calculator that uses computer vision and machine learning to interpret hand gestures.
 
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen) ![Python](https://img.shields.io/badge/Python-3.12-blue) ![Platform](https://img.shields.io/badge/Platform-Win%20|%20Mac%20|%20Linux-lightgrey)
 
-## 🌟 Project Overview
+## Project Overview
 
 This application uses the **MediaPipe Hands** solution combined with a **k-Nearest Neighbor (kNN)** model to perform basic arithmetic operations based on hand gestures (finger counting for numbers, specific poses for operators).
 
 ---
 
-## 🛠️ Installation and Setup
+## Installation and Setup
 
-**⚠️ CRITICAL: Python 3.12 is Required** due to compatibility requirements with the current version of MediaPipe.
+**Python 3.12 is Required** due to compatibility requirements with the current version of MediaPipe.
 
 ### 1. Initial Setup (Clone & Environment)
 Start by cloning the repository and creating a Python virtual environment.
