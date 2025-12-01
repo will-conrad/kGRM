@@ -1,8 +1,11 @@
+import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+
 import cv2 as cv
 import mediapipe as mp
 import numpy as np
 import time
-import os
+
 import csv
 import sys
 import pandas as pd
